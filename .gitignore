@@ -1,0 +1,19 @@
+# Secret keys - NEVER commit these
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Google Cloud credentials
+*.json
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
