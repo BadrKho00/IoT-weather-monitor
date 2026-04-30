@@ -63,6 +63,17 @@ def forecast():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
+@app.route("/ask", methods=["POST"])
+def ask():
+    question = request.get_json().get("question")
+    if not question:
+        return jsonify({"error": "No question provided"}), 400
+    try:
+        from voice import answer_weather_question
+        answer = answer_weather_question(question)
+        return jsonify({"question": question, "answer": answer})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
