@@ -1,26 +1,5 @@
-# Web framework - runs the Flask API server
-flask==3.0.3
-flask-cors==4.0.0
-
-# Google Cloud - connects to BigQuery to store and read sensor data
-google-cloud-bigquery==3.25.0
-google-auth==2.34.0
-
-# Needed by BigQuery client to return results as DataFrames
-pandas==2.2.2
-db-dtypes==1.3.0
-
-# Weather - fetches outdoor weather from OpenWeatherMap
-requests==2.32.3
-
-# OpenAI - Whisper (voice input), TTS (voice output), GPT-4o (Q&A)
-openai==1.51.0
-
-# Dashboard - web interface and interactive charts
 streamlit==1.39.0
 plotly==5.24.1
-
-# Reads your .env file automatically in local development
+pandas==2.2.2
+requests==2.32.3
 python-dotenv==1.0.1
-
-gunicorn==22.0.0
