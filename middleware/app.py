@@ -1,6 +1,12 @@
 import os
 from flask import Flask, request, jsonify
-from bigquery_client import insert_sensor_data, get_latest_reading, get_historical_data, get_daily_averages, check_alerts
+from bigquery_client import (
+    insert_sensor_data,
+    get_latest_reading,
+    get_historical_data,
+    get_daily_averages,
+    check_alerts
+)
 from weather import get_current_weather, get_forecast
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -63,6 +69,24 @@ def forecast():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+@app.route("/alerts", methods=["GET"])
+def alerts():
+    """Return alerts based on the latest sensor reading"""
+    data = get_latest_reading()
+    if not data:
+        return jsonify([])
+    return jsonify(check_alerts(data))
+
+
+@app.route("/averages", methods=["GET"])
+def averages():
+    """Return daily averages for the last N days (default 7)"""
+    days = request.args.get("days", 7, type=int)
+    df = get_daily_averages(days)
+    return jsonify(df.to_dict(orient="records"))
+
+
 @app.route("/ask", methods=["POST"])
 def ask():
     question = request.get_json().get("question")
@@ -74,6 +98,7 @@ def ask():
         return jsonify({"question": question, "answer": answer})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)

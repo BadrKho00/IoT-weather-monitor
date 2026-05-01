@@ -1,8 +1,8 @@
 import os
+import sys
 import openai
 import tempfile
-import sys
-import os
+
 sys.path.append(os.path.dirname(__file__))
 
 from bigquery_client import get_historical_data, get_latest_reading, get_daily_averages
@@ -14,6 +14,7 @@ client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def speech_to_text(audio_file_path: str) -> str:
+    """Convert an audio file to text using OpenAI Whisper"""
     with open(audio_file_path, "rb") as audio_file:
         transcript = client.audio.transcriptions.create(
             model="whisper-1",
@@ -23,6 +24,7 @@ def speech_to_text(audio_file_path: str) -> str:
 
 
 def text_to_speech(text: str, output_path: str = "response.mp3"):
+    """Convert text to an audio file using OpenAI TTS"""
     response = client.audio.speech.create(
         model="tts-1",
         voice="alloy",
@@ -33,13 +35,14 @@ def text_to_speech(text: str, output_path: str = "response.mp3"):
 
 
 def answer_weather_question(question: str) -> str:
-    # Gather context from BigQuery
+    """Answer a weather question using BigQuery data and GPT-4o"""
     latest = get_latest_reading()
     daily = get_daily_averages(7)
 
     context = f"""
-    You are a smart home weather assistant. Answer the user's question based on the sensor data below.
-    Keep answers short, natural and conversational (2-3 sentences max).
+    You are a smart weather assistant for a football/soccer coach in Lausanne, Switzerland.
+    Your job is to help the coach make decisions about training sessions based on weather
+    and indoor conditions. Answer questions in 2-3 sentences, naturally and concisely.
 
     Current readings:
     - Indoor temperature: {latest.get('temperature_indoor')}°C
@@ -64,6 +67,7 @@ def answer_weather_question(question: str) -> str:
 
 
 def process_voice_query(audio_file_path: str) -> dict:
+    """Full pipeline: audio file → transcribe → answer → audio response"""
     question = speech_to_text(audio_file_path)
     print(f"Question heard: {question}")
 

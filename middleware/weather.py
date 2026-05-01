@@ -10,6 +10,7 @@ COUNTRY_CODE = os.getenv("COUNTRY_CODE")
 
 
 def get_current_weather():
+    """Fetch current outdoor weather from OpenWeatherMap"""
     if not API_KEY:
         return {
             "temperature_outdoor": None,
@@ -18,6 +19,7 @@ def get_current_weather():
             "wind_speed": None,
             "weather_icon": "01d"
         }
+
     url = "http://api.openweathermap.org/data/2.5/weather"
     params = {
         "q": f"{CITY},{COUNTRY_CODE}",
@@ -26,6 +28,7 @@ def get_current_weather():
     }
     response = requests.get(url, params=params)
     data = response.json()
+
     return {
         "temperature_outdoor": data["main"]["temp"],
         "humidity_outdoor": data["main"]["humidity"],
@@ -35,17 +38,23 @@ def get_current_weather():
 
 
 def get_forecast():
+    """
+    Fetch 5-day weather forecast from OpenWeatherMap.
+    cnt=40 gives 40 x 3-hour slots = 120 hours = 5 days of data.
+    """
     if not API_KEY:
         return []
+
     url = "http://api.openweathermap.org/data/2.5/forecast"
     params = {
         "q": f"{CITY},{COUNTRY_CODE}",
         "appid": API_KEY,
         "units": "metric",
-        "cnt": 7
+        "cnt": 40  # 40 x 3h = 5 full days (was 7 before = only 21 hours)
     }
     response = requests.get(url, params=params)
     data = response.json()
+
     forecast = []
     for item in data["list"]:
         forecast.append({
