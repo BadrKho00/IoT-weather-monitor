@@ -100,5 +100,44 @@ def ask():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/announce", methods=["POST"])
+def announce():
+    """
+    Check all 6 announcement rules and return any that trigger.
+    Called by the M5Stack when motion is detected or on a schedule.
+    Body: {"motion_detected": true/false}
+    """
+    body = request.get_json() or {}
+    motion_detected = body.get("motion_detected", False)
+
+    try:
+        from voice import run_announcements
+        sensor_data = get_latest_reading()
+        from weather import get_forecast
+        forecast = get_forecast()
+        triggered = run_announcements(sensor_data, forecast, motion_detected)
+        return jsonify({"triggered": triggered, "count": len(triggered)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/demo-announce", methods=["POST"])
+def demo_announce():
+    """
+    Force a specific announcement rule for live demo/defense purposes.
+    Body: {"rule": 1-6}
+    """
+    body = request.get_json() or {}
+    rule_number = body.get("rule", 1)
+
+    try:
+        from voice import run_demo_announcement
+        sensor_data = get_latest_reading()
+        result = run_demo_announcement(rule_number, sensor_data)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     app.run(debug=True, port=5000)
