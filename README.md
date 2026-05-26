@@ -4,6 +4,8 @@ An end-to-end IoT system that gives a football coach a real-time briefing on ind
 
 **Demo video:** https://youtu.be/vGcL3AfFn3E
 
+**GitHub repository:** https://github.com/BadrKho00/IoT-weather-monitor
+
 ---
 
 ## Architecture
