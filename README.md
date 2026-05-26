@@ -10,10 +10,10 @@ An end-to-end IoT system that gives a football coach a real-time briefing on ind
 
 ## Team & Individual Contributions
 
-**Badr Khoulali**
+**Badr Khoumita**
 Designed and built the full cloud backend: Flask middleware (all API endpoints, BigQuery integration, OpenWeatherMap enrichment, alert logic), voice pipeline (Whisper STT → GPT-4o → OpenAI TTS), deployment on Google Cloud Run, and the Streamlit dashboard (UI design, live charts, forecast, voice Q&A panel).
 
-**Salim Benkhadra**
+**Salim Bouchaoui**
 Developed and integrated the M5Stack Core2 device layer: MicroPython application (`coach_weather.py`), sensor drivers (ENV III temperature/humidity, SGP30 air quality, PIR motion), on-device display rendering, voice recording and playback over the middleware pipeline, WiFi credential management, and end-to-end hardware/cloud integration testing.
 
 ---
