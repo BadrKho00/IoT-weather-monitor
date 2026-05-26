@@ -2,6 +2,8 @@
 
 An end-to-end IoT system that gives a football coach a real-time briefing on indoor and outdoor conditions before every training session — displayed on an M5Stack Core2 device, stored in Google BigQuery, and visualised in a Streamlit dashboard.
 
+**Demo video:** https://youtu.be/vGcL3AfFn3E
+
 ---
 
 ## Architecture
