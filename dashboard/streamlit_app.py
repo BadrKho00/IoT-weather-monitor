@@ -856,6 +856,7 @@ for chat in reversed(st.session_state.chat_history):
     st.markdown(f'<div class="chat-who">You</div><div class="chat-msg-you">{chat["q"]}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="chat-who">Assistant</div><div class="chat-msg-ai">{chat["a"]}</div>', unsafe_allow_html=True)
 
+
 # ── FOOTER ────────────────────────────────────────────────────────────────────
 updated = datetime.now().strftime("%d %b %Y · %H:%M")
 st.markdown(f"""

@@ -163,6 +163,12 @@ def voice_raw():
             as_attachment=False
         )
 
+        # Expose text so the M5Stack can display the answer before playing
+        safe_answer   = answer.encode("ascii", errors="replace").decode()[:200]
+        safe_question = question.encode("ascii", errors="replace").decode()[:100]
+        response.headers["X-Answer"]   = safe_answer
+        response.headers["X-Question"] = safe_question
+
         # Nettoyage après envoi
         @response.call_on_close
         def cleanup():

@@ -12,21 +12,24 @@ import MicrophonePDM as MIC
 import wifiCfg
 import network
 
-# --- CAPTEURS ---
+# --- SENSORS ---
 env3_0 = unit.get(unit.ENV3, unit.PORTA)
 pir_0  = unit.get(unit.PIR,  unit.PORTB)
 tvoc_1 = unit.get(unit.TVOC, (14, 13))
 
 # --- CONFIG ---
-FLASK_URL        = "https://iot-weather-middleware-183604469593.europe-west6.run.app"
-INTERVAL         = 10
-current_page     = 0
-total_pages      = 6
-last_tts_time    = 0
-is_recording     = False
-brightness       = 50
-_last_drawn_page = -1
-_mic_initialized = False   # True only between MIC.begin() and MIC.deinit()
+FLASK_URL            = "https://iot-weather-middleware-183604469593.europe-west6.run.app"
+INTERVAL             = 10
+current_page         = 0
+total_pages          = 6
+last_tts_time        = 0
+is_recording         = False
+brightness           = 50
+volume               = 6
+_last_drawn_page     = -1
+_mic_initialized     = False
+_forecast_in_history = False
+_live_blink          = False
 
 # --- PALETTE ---
 C_BG     = 0x0A0A0F
@@ -51,6 +54,17 @@ LED_ORANGE = 0xFF6600
 LED_YELLOW = 0xFFFF00
 LED_PURPLE = 0x9900FF
 LED_WHITE  = 0xFFFFFF
+LED_PINK   = 0xFF00AA
+
+# --- FONTS ---
+try:
+    _FONT_BIG = lcd.FONT_DejaVu40
+    _FONT_MED = lcd.FONT_DejaVu24
+    _FONT_SM  = lcd.FONT_Default
+except AttributeError:
+    _FONT_BIG = lcd.FONT_Default
+    _FONT_MED = lcd.FONT_Default
+    _FONT_SM  = lcd.FONT_Default
 
 def led_set(color, bright=20):
     rgb.setColorAll(color)
@@ -87,7 +101,7 @@ def vibrate_double():
 # --- SETTINGS STATE ---
 settings_menu_active       = False
 settings_menu_index        = 0
-SETTINGS_MENU_ITEMS        = ["WiFi", "Luminosite", "Back"]
+SETTINGS_MENU_ITEMS        = ["WiFi", "Brightness", "Volume", "Back"]
 settings_in_wifi           = False
 settings_wifi_networks     = []
 settings_wifi_index        = 0
@@ -95,7 +109,7 @@ settings_in_keyboard       = False
 settings_keyboard_ssid     = ""
 settings_keyboard_password = ""
 settings_keyboard_index    = 0
-KEYBOARD_LIST = list("abcdefghijklmnopqrstuvwxyz0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%&*-_.") + ["<BS>", "<OK>"]
+KEYBOARD_LIST = list("abcdefghijklmnopqrstuvwxyz0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%&*-_.") + ["<BS>", "<BACK>", "<OK>"]
 settings_editing = None
 
 # --- WIFI ---
@@ -128,7 +142,7 @@ data = {
 }
 
 # ============================================================
-#  HELPERS GENERAUX
+#  GENERAL HELPERS
 # ============================================================
 def get_time():
     try:
@@ -151,7 +165,7 @@ def get_battery():
         return -1
 
 def cleanup_wav():
-    for f in ['/flash/question.wav', '/flash/answer.wav']:
+    for f in ['/flash/question.wav', '/flash/answer.wav', '/flash/announce.wav']:
         try:
             uos.remove(f)
         except:
@@ -176,56 +190,91 @@ def read_sensors():
 # ============================================================
 #  DRAW HELPERS
 # ============================================================
+def _big_value(x, y, val_str, color, unit_str=""):
+    lcd.font(_FONT_BIG)
+    lcd.print(val_str, x, y, color)
+    if unit_str:
+        try:
+            vw = lcd.textWidth(val_str)
+        except:
+            vw = len(val_str) * 24
+        lcd.font(_FONT_SM)
+        lcd.print(unit_str, x + vw + 4, y + 28, color)
+    lcd.font(_FONT_SM)
+
+def _med_value(x, y, val_str, color, unit_str=""):
+    lcd.font(_FONT_MED)
+    lcd.print(val_str, x, y, color)
+    if unit_str:
+        try:
+            vw = lcd.textWidth(val_str)
+        except:
+            vw = len(val_str) * 14
+        lcd.font(_FONT_SM)
+        lcd.print(unit_str, x + vw + 3, y + 14, color)
+    lcd.font(_FONT_SM)
+
+def _label(x, y, text, color=None):
+    if color is None:
+        color = C_MID
+    lcd.font(_FONT_SM)
+    lcd.fillRect(x, y + 2, 4, 4, color)
+    lcd.print(text, x + 8, y, color)
+
 def draw_header(title, accent):
-    lcd.fillRect(0, 0, 320, 22, 0x111122)
-    lcd.fillRect(0, 22, 320, 2, accent)
-    lcd.print(title,      8,   5, accent)
-    lcd.print(get_time(), 118, 5, C_WHITE)
-    lcd.print(get_date(), 182, 6, C_MID)
+    lcd.fillRect(0, 0, 320, 24, 0x0D0D1F)
+    lcd.fillRect(0, 23, 320, 2, accent)
+    lcd.fillCircle(9, 12, 4, accent)
+    lcd.font(_FONT_SM)
+    lcd.print(title, 19, 8, accent)
+    lcd.print(get_time(), 140, 8, C_WHITE)
+    lcd.print(get_date(), 192, 8, C_MID)
     pct = get_battery()
     bat_color = C_GREEN if pct > 60 else (C_YELLOW if pct > 30 else C_RED)
-    lcd.print("{}%".format(pct) if pct >= 0 else "--", 272, 6, bat_color)
+    lcd.print("{}%".format(pct) if pct >= 0 else "--", 276, 8, bat_color)
 
 def draw_card(x, y, w, h, color):
     lcd.fillRoundRect(x, y, w, h, 6, color)
 
 def draw_page_indicator():
-    y = 228
-    start_x = 160 - (total_pages * 10)
+    lcd.fillRect(0, 220, 320, 20, C_BG)
+    y  = 229
+    cx = 160 - (total_pages * 10)
     for i in range(total_pages):
-        x = start_x + i * 20
+        px = cx + i * 20
         if i == current_page:
-            lcd.fillCircle(x, y, 5, C_WARM)
+            lcd.fillRoundRect(px - 5, y - 4, 16, 8, 4, C_WARM)
         else:
-            lcd.fillCircle(x, y, 3, C_DIM)
+            lcd.fillCircle(px + 3, y, 3, C_DIM)
 
 def _draw_static_bg(page):
     lcd.fillScreen(C_BG)
+    lcd.font(_FONT_SM)
     if page == 0:
         draw_header("INDOOR", C_ACCENT)
-        draw_card(8,   28, 148, 76, 0x0D1A2A)
-        draw_card(162, 28, 150, 76, 0x0A1A2A)
-        draw_card(8,  110, 148, 60, 0x0D1A0D)
-        draw_card(162,110, 150, 60, 0x1A1A0A)
+        draw_card(8,   27, 152, 88, 0x0C1828)
+        draw_card(163, 27, 149, 88, 0x0A1628)
+        draw_card(8,  119, 152, 68, 0x0C1C0C)
+        draw_card(163,119, 149, 68, 0x1C1C08)
     elif page == 1:
         draw_header("OUTDOOR", C_COOL)
-        draw_card(8,   28, 304, 66, 0x0A0A1A)
-        draw_card(8,   98, 148, 55, 0x0D0D1A)
-        draw_card(162, 98, 150, 55, 0x0A1A1A)
-        draw_card(8,  158, 304, 48, 0x0D0D0D)
+        draw_card(8,   27, 304, 84, 0x08081E)
+        draw_card(8,  115, 152, 62, 0x0C0C1C)
+        draw_card(163,115, 149, 62, 0x081818)
+        draw_card(8,  181, 304, 40, 0x0E0E0E)
     elif page == 2:
         draw_header("FORECAST", C_GREEN)
-        draw_card(8,  28, 304, 56, 0x0A140A)
-        draw_card(8,  88, 304, 56, 0x0A140A)
-        draw_card(8, 148, 304, 56, 0x0A140A)
+        draw_card(8,  27, 304, 60, 0x091409)
+        draw_card(8,  91, 304, 60, 0x091409)
+        draw_card(8, 155, 304, 60, 0x091409)
     elif page == 3:
         draw_header("COACH TIP", C_YELLOW)
-        draw_card(8, 28, 304, 170, 0x1A1A00)
-        lcd.fillRect(20, 90, 280, 1, C_DIM)
+        draw_card(8, 27, 304, 182, 0x191800)
+        lcd.fillRect(18, 88, 284, 1, C_DIM)
     elif page == 4:
         draw_header("ASK ME", C_PURPLE)
-        draw_card(8, 28, 304, 88, 0x0F000F)
-        lcd.fillRect(8, 122, 304, 1, C_DIM)
+        draw_card(8,  27, 304, 102, 0x100010)
+        lcd.fillRect(8, 134, 304, 1, C_DIM)
     elif page == 5:
         draw_header("SETTINGS", C_WHITE)
 
@@ -234,91 +283,173 @@ def _draw_data_indoor():
     hum  = data["humidity"]
     aqi  = data["air_quality"]
 
-    lcd.fillRoundRect(9,   29, 146, 74, 5, 0x0D1A2A)
-    lcd.fillRoundRect(163, 29, 148, 74, 5, 0x0A1A2A)
-    lcd.fillRoundRect(9,  111, 146, 58, 5, 0x0D1A0D)
-    lcd.fillRoundRect(163,111, 148, 58, 5, 0x1A1A0A)
+    lcd.fillRoundRect(9,   28, 150, 86, 5, 0x0C1828)
+    lcd.fillRoundRect(164, 28, 147, 86, 5, 0x0A1628)
+    lcd.fillRoundRect(9,  120, 150, 66, 5, 0x0C1C0C)
+    lcd.fillRoundRect(164,120, 147, 66, 5, 0x1C1C08)
 
-    lcd.print("TEMPERATURE", 18, 34, C_MID)
-    lcd.print("{}".format(temp), 18, 50, C_WARM)
-    lcd.print("C", 105, 62, C_WARM)
+    lcd.fillRect(8,   27, 3, 88, C_WARM)
+    lcd.fillRect(163, 27, 3, 88, C_COOL)
+    lcd.fillRect(8,  119, 3, 68, C_GREEN)
+    lcd.fillRect(163,119, 3, 68, C_YELLOW)
+
+    _label(20, 34, "TEMPERATURE")
+    t_str = str(round(temp, 1)) if isinstance(temp, float) else str(temp)
+    _big_value(18, 47, t_str, C_WARM, chr(176) + "C")
 
     hum_color = C_RED if isinstance(hum, float) and hum < 40 else C_COOL
-    lcd.print("HUMIDITE", 172, 34, C_MID)
-    lcd.print("{}%".format(hum), 172, 50, hum_color)
+    _label(172, 34, "HUMIDITY")
+    h_str = str(round(hum, 1)) if isinstance(hum, float) else str(hum)
+    _big_value(172, 47, h_str, hum_color, "%")
     if isinstance(hum, float) and hum < 40:
-        lcd.print("! ALERTE", 172, 88, C_RED)
+        lcd.font(_FONT_SM)
+        lcd.print("LOW!", 172, 96, C_RED)
 
     if isinstance(aqi, int):
         aqi_color = C_GREEN if aqi < 100 else (C_YELLOW if aqi < 150 else C_RED)
-        aqi_text  = "Bon" if aqi < 100 else ("Moyen" if aqi < 150 else "Mauvais")
+        aqi_label = "Good" if aqi < 100 else ("Fair" if aqi < 150 else "Poor")
     else:
         aqi_color = C_WHITE
-        aqi_text  = "--"
-    lcd.print("AIR QUALITY", 18, 116, C_MID)
-    lcd.print(aqi_text, 18, 132, aqi_color)
+        aqi_label = ""
+    _label(18, 126, "AIR QUALITY")
+    lcd.font(_FONT_MED)
+    lcd.print(str(aqi) if isinstance(aqi, int) else "--", 18, 142, aqi_color)
+    lcd.font(_FONT_SM)
+    if aqi_label:
+        lcd.print(aqi_label, 18, 168, aqi_color)
 
-    motion_text  = "Detecte" if data["motion"] else "Aucun"
+    motion_text  = "Detected" if data["motion"] else "None"
     motion_color = C_WARM if data["motion"] else C_GREEN
-    lcd.print("MOUVEMENT", 172, 116, C_MID)
-    lcd.print(motion_text, 172, 132, motion_color)
+    _label(172, 126, "MOTION")
+    ring_c  = C_WARM if data["motion"] else 0x1A3A1A
+    inner_c = C_RED  if data["motion"] else C_GREEN
+    lcd.fillCircle(185, 152, 12, ring_c)
+    lcd.fillCircle(185, 152,  7, inner_c)
+    lcd.font(_FONT_SM)
+    lcd.print(motion_text, 204, 147, motion_color)
 
-    lcd.fillRect(8, 175, 304, 20, C_BG)
+    lcd.fillRect(8, 191, 304, 24, C_BG)
     if data["alerts"]:
-        lcd.fillRect(8, 174, 304, 22, 0x2A0000)
-        lcd.print("! " + str(data["alerts"][0])[:28], 14, 180, C_RED)
+        lcd.fillRoundRect(8, 191, 304, 22, 4, 0x2A0000)
+        lcd.fillRect(8, 191, 3, 22, C_RED)
+        lcd.font(_FONT_SM)
+        lcd.print("! " + str(data["alerts"][0])[:30], 16, 198, C_RED)
+
+    # Pulsing LIVE dot — toggled every second by _anim_counter in main loop
+    _dot_col = C_GREEN if _live_blink else 0x003300
+    lcd.fillRect(268, 205, 48, 12, C_BG)
+    lcd.font(_FONT_SM)
+    lcd.print("LIVE", 272, 207, _dot_col)
+    lcd.fillCircle(308, 212, 4, _dot_col)
 
 def _draw_data_outdoor():
-    lcd.fillRoundRect(9,   29, 302, 64, 5, 0x0A0A1A)
-    lcd.fillRoundRect(9,   99, 146, 53, 5, 0x0D0D1A)
-    lcd.fillRoundRect(163, 99, 148, 53, 5, 0x0A1A1A)
-    lcd.fillRoundRect(9,  159, 302, 46, 5, 0x0D0D0D)
+    lcd.fillRoundRect(9,   28,  302, 82, 5, 0x08081E)
+    lcd.fillRoundRect(9,  116, 150, 60, 5, 0x0C0C1C)
+    lcd.fillRoundRect(164,116, 147, 60, 5, 0x081818)
+    lcd.fillRoundRect(9,  182, 302, 38, 5, 0x0E0E0E)
 
-    lcd.print("TEMPERATURE EXT.", 18, 34, C_MID)
-    lcd.print("{}".format(data["temp_outdoor"]), 18, 50, C_WARM)
-    lcd.print("C", 105, 62, C_WARM)
+    lcd.fillRect(8,   27, 3, 84, C_COOL)
+    lcd.fillRect(8,  115, 3, 62, C_ACCENT)
+    lcd.fillRect(163,115, 3, 62, C_GREEN)
+    lcd.fillRect(8,  181, 3, 40, C_MID)
 
+    _label(20, 34, "OUTDOOR TEMP")
+    t_str = str(round(data["temp_outdoor"], 1)) if isinstance(data["temp_outdoor"], float) else str(data["temp_outdoor"])
+    _big_value(20, 47, t_str, C_WARM, chr(176) + "C")
+
+    _label(18, 122, "FEELS LIKE")
     feels = data["feels_like"]
-    lcd.print("RESSENTI", 18, 104, C_MID)
-    lcd.print("{}C".format(feels) if isinstance(feels, float) else str(feels), 18, 120, C_WHITE)
+    f_str = str(round(feels, 1)) if isinstance(feels, float) else str(feels)
+    _med_value(18, 138, f_str, C_WHITE, chr(176) + "C")
 
-    lcd.print("VENT", 172, 104, C_MID)
-    lcd.print("{} m/s".format(data["wind"]), 172, 120, C_ACCENT)
+    _label(172, 122, "WIND")
+    w_str = str(round(data["wind"], 1)) if isinstance(data["wind"], float) else str(data["wind"])
+    _med_value(172, 138, w_str, C_ACCENT, " m/s")
 
-    lcd.print("CONDITIONS", 18, 164, C_MID)
-    lcd.print(str(data["description"])[:28], 18, 180, C_WHITE)
+    _label(18, 188, "CONDITIONS")
+    lcd.font(_FONT_SM)
+    lcd.print(str(data["description"])[:30], 18, 200, C_WHITE)
 
 def _draw_data_forecast():
-    items_y = [34, 94, 154]
+    items_y = [27, 91, 155]
     for i, y in enumerate(items_y):
-        lcd.fillRoundRect(9, y + 1, 302, 54, 5, 0x0A140A)
+        lcd.fillRoundRect(9, y + 1, 302, 58, 5, 0x091409)
+        lcd.fillRect(8, y, 3, 60, C_GREEN)
         if i < len(data["forecast"]):
-            item = data["forecast"][i]
-            dt   = str(item.get("datetime", ""))[:10]
-            temp = item.get("temperature", "--")
-            desc = str(item.get("description", ""))[:22]
+            item  = data["forecast"][i]
+            dt    = str(item.get("datetime", ""))[:16]
+            temp  = item.get("temperature", "--")
+            desc  = str(item.get("description", ""))[:24]
+            lcd.font(_FONT_SM)
             lcd.print(dt, 18, y + 8, C_MID)
-            lcd.print("{}C".format(round(temp) if isinstance(temp, float) else temp), 230, y + 8, C_WARM)
-            lcd.print(desc, 18, y + 28, C_WHITE)
+            t_str   = "{}{}C".format(round(temp) if isinstance(temp, float) else temp, chr(176))
+            t_color = C_COOL if (isinstance(temp, float) and temp < 10) else (C_WARM if isinstance(temp, float) and temp > 20 else C_WHITE)
+            lcd.font(_FONT_MED)
+            lcd.print(t_str, 216, y + 4, t_color)
+            lcd.font(_FONT_SM)
+            lcd.print(desc, 18, y + 36, C_WHITE)
         else:
-            lcd.print("--", 18, y + 18, C_MID)
+            lcd.font(_FONT_SM)
+            lcd.print("--", 18, y + 24, C_DIM)
     if not data["forecast"]:
-        lcd.print("Pas de donnees disponibles", 50, 110, C_MID)
+        lcd.font(_FONT_SM)
+        lcd.print("No data available", 90, 110, C_MID)
+    lcd.fillRect(8, 215, 304, 10, C_BG)
+    lcd.font(_FONT_SM)
+    lcd.print("B: history charts", 92, 205, C_MID)
 
 def _draw_data_coach():
-    lcd.fillRoundRect(9, 29, 302, 168, 5, 0x1A1A00)
-    lcd.fillRect(20, 90, 280, 1, C_DIM)
+    lcd.fillRoundRect(9, 28, 302, 180, 5, 0x191800)
+    lcd.fillRect(18, 88, 284, 1, C_DIM)
     l1, l2, l3 = get_coach_tip()
-    lcd.print(l1, 20, 55, C_YELLOW)
-    lcd.print(l2, 20, 100, C_WHITE)
-    lcd.print(l3, 20, 130, C_WHITE)
+
+    ix, iy = 148, 60
+    tip_l = l1.lower()
+    if "rain" in tip_l or "storm" in tip_l:
+        lcd.fillCircle(ix,     iy - 4, 7, C_COOL)
+        lcd.fillCircle(ix + 8, iy - 6, 6, C_COOL)
+        lcd.fillRect(ix - 7, iy - 4, 22, 8, C_COOL)
+        for dx in [-6, 0, 6]:
+            lcd.fillRect(ix + dx, iy + 6, 2, 6, C_ACCENT)
+    elif "hot" in tip_l:
+        lcd.fillCircle(ix, iy, 9, C_WARM)
+        for dx, dy in [(0,-15),(11,-10),(15,0),(11,10),(0,15),(-11,10),(-15,0),(-11,-10)]:
+            lcd.fillRect(ix + dx - 1, iy + dy - 1, 3, 3, C_WARM)
+    elif "cold" in tip_l or "wind" in tip_l:
+        lcd.drawLine(ix - 12, iy, ix + 12, iy, C_ACCENT)
+        lcd.drawLine(ix, iy - 12, ix, iy + 12, C_ACCENT)
+        lcd.drawLine(ix - 8, iy - 8, ix + 8, iy + 8, C_ACCENT)
+        lcd.drawLine(ix + 8, iy - 8, ix - 8, iy + 8, C_ACCENT)
+    elif "air" in tip_l or "poor" in tip_l:
+        lcd.drawLine(ix, iy - 13, ix - 11, iy + 8, C_RED)
+        lcd.drawLine(ix - 11, iy + 8, ix + 11, iy + 8, C_RED)
+        lcd.drawLine(ix + 11, iy + 8, ix, iy - 13, C_RED)
+        lcd.font(_FONT_SM)
+        lcd.print("!", ix - 2, iy - 3, C_RED)
+    else:
+        lcd.fillCircle(ix, iy, 12, C_GREEN)
+        lcd.drawLine(ix - 6, iy + 2, ix - 1, iy + 7, C_BG)
+        lcd.drawLine(ix - 1, iy + 7, ix + 8, iy - 5, C_BG)
+
+    lcd.font(_FONT_SM)
+    lcd.print(l1[:32], 18, 40, C_YELLOW)
+    lcd.print(l2[:36], 18, 100, C_WHITE)
+    lcd.print(l3[:36], 18, 128, C_WHITE)
+    lcd.fillRect(18, 158, 284, 1, C_DIM)
+    lcd.print("Swipe left/right to navigate", 18, 166, C_DIM)
 
 def _draw_motion_only():
-    lcd.fillRoundRect(163, 111, 148, 58, 5, 0x1A1A0A)
-    motion_text  = "Detecte" if data["motion"] else "Aucun"
+    lcd.fillRoundRect(164,120, 147, 66, 5, 0x1C1C08)
+    lcd.fillRect(163,119, 3, 68, C_YELLOW)
+    motion_text  = "Detected" if data["motion"] else "None"
     motion_color = C_WARM if data["motion"] else C_GREEN
-    lcd.print("MOUVEMENT", 172, 116, C_MID)
-    lcd.print(motion_text, 172, 132, motion_color)
+    _label(172, 126, "MOTION")
+    ring_c  = C_WARM if data["motion"] else 0x1A3A1A
+    inner_c = C_RED  if data["motion"] else C_GREEN
+    lcd.fillCircle(185, 152, 12, ring_c)
+    lcd.fillCircle(185, 152,  7, inner_c)
+    lcd.font(_FONT_SM)
+    lcd.print(motion_text, 204, 147, motion_color)
 
 # ============================================================
 #  FETCH
@@ -367,6 +498,18 @@ def fetch_alerts():
             r.close()
     except:
         pass
+
+def fetch_indoor_history():
+    try:
+        r = urequests.get(FLASK_URL + "/history?hours=24")
+        if r.status_code == 200:
+            rows = ujson.loads(r.text)
+            r.close()
+            return rows if isinstance(rows, list) else []
+        r.close()
+    except:
+        pass
+    return []
 
 def send_sensor_data():
     temp, hum, tvoc, motion = read_sensors()
@@ -421,10 +564,7 @@ def get_coach_tip():
         return "Check conditions", "before training", "Stay safe!"
 
 # ============================================================
-#  FIX 1 — Settings state flush
-#  Atomically resets all settings sub-navigation flags.
-#  Called from every code path that exits page 5 so stale
-#  flags can never re-lock navigation on subsequent visits.
+#  SETTINGS STATE FLUSH
 # ============================================================
 def _flush_settings_state():
     global settings_menu_active, settings_menu_index
@@ -444,44 +584,39 @@ def _flush_settings_state():
 
 # ============================================================
 #  SPEECH
-#  Bug A — "object of type 'file' has no len":
-#    UIFlow 1 urequests calls len(data) before sending; file
-#    objects have no __len__ so data=f always raises.
-#    Fix: read into a pre-allocated bytearray of known size,
-#    then del + gc immediately after the POST returns.
-#
-#  Bug B — watchdog on second consecutive call:
-#    MIC.deinit() on an already-deinitialized MIC hangs the I2S
-#    hardware waiting for a bus that is already idle, causing the
-#    watchdog to fire before the timeout completes.
-#    Fix: _mic_initialized flag — deinit only when actually live.
-#    Also: 8 kHz sample rate → 8 KB DMA buffer (was 32 KB at
-#    16 kHz), which survives a fragmented heap on the second call.
 # ============================================================
 def ask_question():
     global is_recording, _last_drawn_page, _mic_initialized
     is_recording = True
     vibrate()
 
-    lcd.fillScreen(C_BG)
-    draw_header("ASK ME", C_PURPLE)
-    draw_card(8, 28, 304, 88, 0x0F000F)
+    def _ask_screen(line1, color1, line2="", color2=None, stripe=C_PURPLE):
+        lcd.fillScreen(C_BG)
+        draw_header("ASK ME", C_PURPLE)
+        draw_card(8, 27, 304, 102, 0x100010)
+        lcd.fillRect(8, 27, 3, 102, stripe)
+        lcd.font(_FONT_MED)
+        lcd.print(line1, 22, 44, color1)
+        if line2:
+            lcd.font(_FONT_SM)
+            lcd.print(line2, 22, 74, color2 if color2 else C_MID)
+        lcd.font(_FONT_SM)
+
+    _ask_screen("Get ready...", C_YELLOW, "Releasing audio bus", C_MID)
     led_set(LED_ORANGE)
-    lcd.print("Preparez-vous...", 20, 55, C_YELLOW)
     time.sleep(2)
 
     try:
-        # ── Step 1: Release speaker I2S bus first (NS4168 holds shared bus) ───
+        # Step 1: Release speaker I2S bus
         try:
             speaker.deinit()
         except Exception:
             pass
         gc.collect()
-        time.sleep_ms(300)
+        time.sleep_ms(1000)
+        gc.collect()
 
-        # ── Step 2: Deinit MIC only if it is currently live ───────────────────
-        # Calling MIC.deinit() on an uninitialised MIC hangs the I2S hardware
-        # for the full timeout, triggering the watchdog before it returns.
+        # Step 2: Deinit MIC only if currently live
         if _mic_initialized:
             try:
                 MIC.deinit(1000)
@@ -491,57 +626,55 @@ def ask_question():
             gc.collect()
             time.sleep_ms(500)
 
-        # ── Step 3: Double GC to defragment heap before DMA allocation ────────
+        # Step 3: Double GC
         gc.collect()
         time.sleep_ms(200)
         gc.collect()
         time.sleep_ms(300)
 
-        # ── Step 4: Begin MIC at 8 kHz ────────────────────────────────────────
-        # 8 kHz: DMA buffer = 8 KB (was 32 KB at 16 kHz) — survives a
-        # fragmented heap. Whisper accepts 8 kHz audio without issue.
+        # Step 4: Begin MIC at 8 kHz (small DMA buffer survives fragmented heap)
         MIC.begin(pin_ws=0, pin_data=34, sample_rate_hz=8000,
                   buffer_length_ms=500, block_length_ms=100)
         _mic_initialized = True
 
         lcd.fillScreen(C_BG)
         draw_header("ASK ME", C_PURPLE)
-        draw_card(8, 28, 304, 88, 0x0F000F)
-        led_set(LED_PURPLE)
-        lcd.print("Enregistrement 5s...", 20, 45, C_RED)
-        lcd.print("Parlez maintenant !", 20, 70, C_WHITE)
+        draw_card(8, 27, 304, 102, 0x200010)
+        lcd.fillRect(8, 27, 3, 102, C_RED)
+        lcd.fillRoundRect(20, 38, 14, 20, 5, C_RED)
+        lcd.fillRect(26, 58, 2, 6, C_RED)
+        lcd.drawLine(20, 64, 36, 64, C_RED)
+        lcd.font(_FONT_MED)
+        lcd.print("Recording...", 46, 38, C_RED)
+        lcd.font(_FONT_SM)
+        lcd.print("5 seconds  speak now!", 46, 68, C_WHITE)
+        lcd.print("Keep device still", 46, 84, C_MID)
+        led_set(LED_RED, 25)
 
         with open('/flash/question.wav', 'wb') as f_mic:
             MIC.recordStart(f_mic, 5000)
             MIC.waitRecordDone(7000)
 
-        # ── Step 5: Release MIC I2S aggressively ─────────────────────────────
+        # Step 5: Release MIC I2S aggressively
         MIC.deinit(2000)
         _mic_initialized = False
         gc.collect()
-        time.sleep_ms(500)
+        time.sleep_ms(800)
         gc.collect()
-        time.sleep_ms(500)
+        time.sleep_ms(800)
+        gc.collect()
+        time.sleep_ms(400)
 
-        lcd.fillScreen(C_BG)
-        draw_header("ASK ME", C_PURPLE)
-        draw_card(8, 28, 304, 88, 0x0F000F)
+        _ask_screen("Processing...", C_YELLOW, "Sending to AI", C_MID, C_WARM)
         led_set(LED_ORANGE)
-        lcd.print("Traitement...", 20, 55, C_YELLOW)
 
-        # ── Step 6: POST via bytearray — UIFlow 1 urequests rejects file objs ─
-        # urequests calls len(data) before sending. File objects have no
-        # __len__, so data=f raises "object of type 'file' has no len".
-        # bytearray(known_size) pre-allocates one contiguous block; readinto()
-        # fills it without a second copy. At 8 kHz × 5 s × 2 B = 80 KB,
-        # which a post-GC heap can satisfy in one shot.
+        # Step 6: POST via bytearray (urequests needs len(); file objects have no __len__)
         try:
             file_size = uos.stat('/flash/question.wav')[6]
         except Exception:
             file_size = 0
-        lcd.print("{}o envoyes".format(file_size), 20, 75, C_MID)
 
-        gc.collect()                              # sweep before large allocation
+        gc.collect()
         buf = bytearray(file_size)
         with open('/flash/question.wav', 'rb') as f:
             f.readinto(buf)
@@ -554,12 +687,52 @@ def ask_question():
                 "Content-Length": str(file_size)
             }
         )
-        del buf                                   # free 80 KB immediately
+        del buf
         gc.collect()
 
         if r.status_code == 200:
-            led_set(LED_WHITE)
-            lcd.print("Lecture reponse...", 20, 80, C_GREEN)
+            answer_text = ""
+            try:
+                answer_text = r.headers.get("x-answer", "") or r.headers.get("X-Answer", "")
+            except Exception:
+                pass
+
+            led_set(LED_CYAN, 20)
+            lcd.fillScreen(C_BG)
+            draw_header("ASK ME", C_PURPLE)
+
+            if answer_text:
+                draw_card(8, 27, 304, 106, 0x0A0018)
+                lcd.fillRect(8, 27, 3, 106, C_ACCENT)
+                _label(18, 33, "ANSWER", C_ACCENT)
+                a = answer_text[:78]
+                lcd.font(_FONT_SM)
+                lcd.print(a[:26],  18, 50, C_WHITE)
+                if len(a) > 26:
+                    lcd.print(a[26:52], 18, 66, C_WHITE)
+                if len(a) > 52:
+                    lcd.print(a[52:78], 18, 82, C_WHITE)
+                lcd.print("Playing response...", 18, 100, C_ACCENT)
+            else:
+                draw_card(8, 27, 304, 68, 0x0A0018)
+                lcd.fillRect(8, 27, 3, 68, C_ACCENT)
+                lcd.font(_FONT_MED)
+                lcd.print("Playing...", 22, 44, C_GREEN)
+                lcd.font(_FONT_SM)
+
+            if data["forecast"]:
+                fc      = data["forecast"][0]
+                fc_temp = fc.get("temperature", "--")
+                fc_desc = str(fc.get("description", ""))[:22]
+                draw_card(8, 138, 304, 50, 0x091409)
+                lcd.fillRect(8, 138, 3, 50, C_GREEN)
+                _label(18, 144, "NEXT FORECAST", C_GREEN)
+                lcd.font(_FONT_SM)
+                lcd.print("{}  {}{}C  {}".format(
+                    str(fc.get("datetime", ""))[:10],
+                    round(fc_temp) if isinstance(fc_temp, float) else fc_temp,
+                    chr(176), fc_desc)[:34], 18, 160, C_WHITE)
+
             with open('/flash/answer.wav', 'wb') as f:
                 f.write(r.content)
             r.close()
@@ -567,33 +740,59 @@ def ask_question():
             gc.collect()
 
             time.sleep_ms(500)
-            speaker.playWAV('/flash/answer.wav', volume=6)
-            lcd.print("Termine !", 20, 105, C_GREEN)
+            speaker.playWAV('/flash/answer.wav', volume=volume)
+
+            lcd.font(_FONT_SM)
+            lcd.print("Done!  Press B to ask again", 18, 196, C_GREEN)
 
             try:
                 speaker.deinit()
             except Exception:
                 pass
             gc.collect()
-            time.sleep_ms(800)
+            time.sleep_ms(1500)
+            gc.collect()
+            time.sleep_ms(500)
 
         else:
+            r.close()
+            lcd.fillScreen(C_BG)
+            draw_header("ASK ME", C_PURPLE)
+            draw_card(8, 27, 304, 80, 0x200000)
+            lcd.fillRect(8, 27, 3, 80, C_RED)
+            lcd.font(_FONT_MED)
+            lcd.print("Server Error", 22, 44, C_RED)
+            lcd.font(_FONT_SM)
             try:
-                lcd.print(r.text[:25], 20, 80, C_RED)
+                lcd.print(r.text[:28], 22, 72, C_MID)
             except Exception:
                 pass
-            r.close()
             led_set(LED_RED)
-            lcd.print("Erreur serveur", 20, 80, C_RED)
 
     except Exception as e:
         lcd.fillScreen(C_BG)
         draw_header("ASK ME", C_PURPLE)
-        lcd.print("ERR:{}".format(str(e)[:25]), 20, 100, C_RED)
+        draw_card(8, 27, 304, 80, 0x200000)
+        lcd.fillRect(8, 27, 3, 80, C_RED)
+        lcd.font(_FONT_SM)
+        lcd.print("Error:", 22, 40, C_RED)
+        lcd.print(str(e)[:30], 22, 56, C_MID)
         led_set(LED_RED)
 
     finally:
+        try:
+            speaker.deinit()
+        except Exception:
+            pass
+        if _mic_initialized:
+            try:
+                MIC.deinit(1000)
+            except Exception:
+                pass
+            _mic_initialized = False
         cleanup_wav()
+        gc.collect()
+        time.sleep_ms(500)
         gc.collect()
         is_recording     = False
         _last_drawn_page = -1
@@ -609,11 +808,9 @@ def play_weather_announcement():
     if is_recording:
         return
     now = time.time()
-    if now - last_tts_time < 300:   # 5-minute cooldown
+    if now - last_tts_time < 3600:
         return
 
-    # Build a contextual French announcement from live data.
-    # Accented chars are safe: UIFlow 1 uses UTF-8 source files.
     desc = str(data["description"]).lower()
     temp = data["temp_outdoor"]
     wind = data["wind"]
@@ -621,31 +818,31 @@ def play_weather_announcement():
     aqi  = data["air_quality"]
     try:
         if "rain" in desc or "storm" in desc:
-            msg = ("Bonjour coach ! Pluie prevue aujourd'hui. "
-                   "Pensez a prevoir des vetements impermeables pour l'entrainement !")
+            msg = ("Hello coach! Rain expected today. "
+                   "Remember to bring waterproof gear for training!")
         elif isinstance(temp, (int, float)) and temp > 25:
-            msg = ("Bonjour coach ! Il fait {} degres dehors aujourd'hui. "
-                   "Faites boire les joueurs toutes les quinze minutes !").format(int(temp))
+            msg = ("Hello coach! It is {} degrees outside today. "
+                   "Make sure players hydrate every fifteen minutes!").format(int(temp))
         elif isinstance(temp, (int, float)) and temp < 5:
-            msg = ("Bonjour coach ! Il fait seulement {} degres. "
-                   "Prevoyez un echauffement long et progressif avant l'entrainement !").format(int(temp))
+            msg = ("Hello coach! It is only {} degrees outside. "
+                   "Plan a long progressive warm-up before training!").format(int(temp))
         elif isinstance(wind, (int, float)) and wind > 10:
-            msg = ("Bonjour coach ! Vent fort de {} metres par seconde. "
-                   "Adaptez vos exercices en consequence !").format(round(wind, 1))
+            msg = ("Hello coach! Strong wind at {} metres per second. "
+                   "Adjust your drills accordingly!").format(round(wind, 1))
         elif isinstance(hum, (int, float)) and hum < 40:
-            msg = ("Bonjour coach ! Humidite tres basse, seulement {} pourcent. "
-                   "Insistez sur l'hydratation pendant l'entrainement !").format(int(hum))
+            msg = ("Hello coach! Humidity is very low at {} percent. "
+                   "Insist on hydration during training!").format(int(hum))
         elif isinstance(aqi, int) and aqi > 150:
-            msg = ("Bonjour coach ! La qualite de l'air est mauvaise aujourd'hui. "
-                   "Evitez les efforts cardio intenses !")
+            msg = ("Hello coach! Air quality is poor today. "
+                   "Avoid intense cardio exercises!")
         else:
-            msg = ("Bonjour coach ! Les conditions sont ideales pour l'entrainement. "
-                   "Bonne seance a toute l'equipe !")
+            msg = ("Hello coach! Conditions are ideal for training. "
+                   "Have a great session with the team!")
     except Exception:
-        msg = "Bonjour coach ! Verifiez les conditions avant l'entrainement."
+        msg = "Hello coach! Please check conditions before training."
 
-    # POST text to /announce → middleware runs TTS only (no STT/GPT), returns WAV.
     try:
+        led_set(LED_PINK, 25)
         r = urequests.post(
             FLASK_URL + "/announce",
             headers={"Content-Type": "application/json"},
@@ -658,7 +855,7 @@ def play_weather_announcement():
             del r
             gc.collect()
             last_tts_time = now
-            speaker.playWAV('/flash/announce.wav', volume=6)
+            speaker.playWAV('/flash/announce.wav', volume=volume)
             try:
                 speaker.deinit()
             except Exception:
@@ -672,6 +869,75 @@ def play_weather_announcement():
             r.close()
     except Exception:
         pass
+    led_page(current_page)
+
+# ============================================================
+#  FORECAST HISTORY CHART
+# ============================================================
+def show_page_forecast_history():
+    global _last_drawn_page
+    lcd.fillScreen(C_BG)
+    draw_header("HISTORY", C_GREEN)
+    lcd.font(_FONT_SM)
+    lcd.print("Loading...", 118, 112, C_MID)
+
+    rows = fetch_indoor_history()
+
+    lcd.fillScreen(C_BG)
+    draw_header("HISTORY  (last 24 h)", C_GREEN)
+
+    if not rows:
+        draw_card(60, 80, 200, 60, 0x0C1C0C)
+        lcd.fillRect(60, 80, 3, 60, C_GREEN)
+        lcd.font(_FONT_SM)
+        lcd.print("No data available", 74, 104, C_MID)
+        lcd.print("A: back", 120, 160, C_DIM)
+        draw_page_indicator()
+        _last_drawn_page = -1
+        return
+
+    temps = []
+    hums  = []
+    aqis  = []
+    for row in rows[-20:]:
+        t = row.get("temperature_indoor")
+        h = row.get("humidity_indoor")
+        a = row.get("air_quality")
+        if t is not None: temps.append(float(t))
+        if h is not None: hums.append(float(h))
+        if a is not None: aqis.append(float(a))
+
+    def _mini_chart(label, values, y_top, bar_color, unit_str):
+        draw_card(8, y_top, 304, 52, 0x0A140A)
+        lcd.fillRect(8, y_top, 3, 52, bar_color)
+        if not values:
+            lcd.font(_FONT_SM)
+            lcd.print(label + ": no data", 18, y_top + 20, C_MID)
+            return
+        mn    = min(values)
+        mx    = max(values)
+        avg   = sum(values) / len(values)
+        span  = mx - mn if mx != mn else 1
+        ch    = 28
+        cy    = y_top + 22
+        n     = len(values)
+        bar_w = max(1, 280 // n)
+        for i, v in enumerate(values):
+            h_px = max(1, int((v - mn) / span * ch))
+            lcd.fillRect(20 + i * bar_w, cy + ch - h_px, bar_w - 1, h_px, bar_color)
+        lcd.font(_FONT_SM)
+        lcd.print("{}: avg {:.1f}{}  min {:.1f}  max {:.1f}".format(
+            label, avg, unit_str, mn, mx)[:38], 18, y_top + 6, C_WHITE)
+
+    _mini_chart("Temp",     temps, 27,  C_WARM,   "C")
+    _mini_chart("Humidity", hums,  83,  C_COOL,   "%")
+    _mini_chart("AQI",      aqis,  139, C_YELLOW, "")
+
+    lcd.fillRect(8, 198, 304, 16, C_BG)
+    lcd.font(_FONT_SM)
+    lcd.print("A: back to forecast", 76, 200, C_DIM)
+    draw_page_indicator()
+    _last_drawn_page = -1
 
 # ============================================================
 #  PAGES
@@ -694,6 +960,9 @@ def show_page_outdoor(force_bg=False):
 
 def show_page_forecast(force_bg=False):
     global _last_drawn_page
+    if _forecast_in_history:
+        show_page_forecast_history()
+        return
     if _last_drawn_page != 2 or force_bg:
         _draw_static_bg(2)
         _last_drawn_page = 2
@@ -713,13 +982,27 @@ def show_page_ask():
     if _last_drawn_page != 4:
         _draw_static_bg(4)
         _last_drawn_page = 4
-    lcd.fillRoundRect(9, 29, 302, 86, 5, 0x0F000F)
-    lcd.print("Appuie sur B", 20, 45, C_WHITE)
-    lcd.print("pour poser une question", 20, 68, C_MID)
-    lcd.fillRect(8, 122, 304, 1, C_DIM)
-    lcd.print("Exemples :", 18, 132, C_MID)
-    lcd.print("Good to train today?", 18, 152, C_DIM)
-    lcd.print("How is air quality?", 18, 170, C_DIM)
+
+    lcd.fillRoundRect(9, 28, 302, 100, 5, 0x100010)
+    lcd.fillRect(8, 27, 3, 102, C_PURPLE)
+    lcd.fillRoundRect(18, 38, 14, 22, 5, C_PURPLE)
+    lcd.fillRect(24, 60, 2, 7, C_PURPLE)
+    lcd.drawLine(18, 67, 34, 67, C_PURPLE)
+
+    lcd.font(_FONT_MED)
+    lcd.print("Press B to ask", 44, 40, C_WHITE)
+    lcd.font(_FONT_SM)
+    lcd.print("5-second voice question", 44, 68, C_MID)
+    lcd.print("Response plays through speaker", 44, 84, C_MID)
+
+    lcd.fillRect(8, 134, 304, 1, C_DIM)
+    _label(18, 142, "EXAMPLES", C_MID)
+    lcd.font(_FONT_SM)
+    draw_card(8, 158, 304, 22, 0x0A0A18)
+    lcd.print("Is it good to train outside today?", 18, 164, C_DIM)
+    draw_card(8, 184, 304, 22, 0x0A0A18)
+    lcd.print("How is the air quality right now?", 18, 190, C_DIM)
+
     draw_page_indicator()
 
 def show_page_settings():
@@ -729,30 +1012,39 @@ def show_page_settings():
     draw_header("SETTINGS", C_WHITE)
 
     if settings_in_keyboard:
-        draw_card(8, 28, 304, 42, 0x0A0A1A)
-        lcd.print("WiFi : " + settings_keyboard_ssid[:22], 14, 36, C_ACCENT)
+        draw_card(8, 28, 304, 44, 0x0A0A1E)
+        lcd.fillRect(8, 28, 3, 44, C_ACCENT)
+        lcd.font(_FONT_SM)
+        lcd.print("WiFi: " + settings_keyboard_ssid[:22], 18, 36, C_ACCENT)
         pwd_display = "*" * len(settings_keyboard_password)
-        lcd.print("Pass : " + pwd_display[-20:], 14, 54, C_YELLOW)
-        lcd.fillRect(8, 76, 304, 1, C_DIM)
-        draw_card(85, 87, 60, 28, 0x1A1A00)
+        lcd.print("Pass: " + pwd_display[-20:], 18, 52, C_YELLOW)
+
+        lcd.fillRect(8, 78, 304, 1, C_DIM)
+        draw_card(80, 88, 68, 30, 0x1C1C00)
+        lcd.fillRect(80, 88, 3, 30, C_YELLOW)
         total_k = len(KEYBOARD_LIST)
         prev_i  = (settings_keyboard_index - 1) % total_k
         curr_i  = settings_keyboard_index
         next_i  = (settings_keyboard_index + 1) % total_k
-        lcd.print(str(KEYBOARD_LIST[prev_i]), 30, 96, C_MID)
-        lcd.print(str(KEYBOARD_LIST[curr_i]), 97, 93, C_YELLOW)
-        lcd.print(str(KEYBOARD_LIST[next_i]), 160, 96, C_MID)
-        lcd.fillRect(8, 124, 304, 1, C_DIM)
-        lcd.print("A: prec   C: suiv   B: select", 14, 134, C_MID)
-        lcd.print("Naviguer jusqu'a <OK> pour valider", 14, 154, C_DIM)
-        lcd.print("<BS> pour effacer", 14, 172, C_DIM)
+        lcd.print("< " + str(KEYBOARD_LIST[prev_i]), 16, 99, C_MID)
+        lcd.font(_FONT_MED)
+        lcd.print(str(KEYBOARD_LIST[curr_i]), 94, 92, C_YELLOW)
+        lcd.font(_FONT_SM)
+        lcd.print(str(KEYBOARD_LIST[next_i]) + " >", 162, 99, C_MID)
+
+        lcd.fillRect(8, 126, 304, 1, C_DIM)
+        lcd.print("A: prev   C: next   B: select", 18, 136, C_MID)
+        lcd.print("<OK> confirm   <BACK> cancel", 18, 154, C_DIM)
+        lcd.print("<BS> deletes last char", 18, 172, C_DIM)
 
     elif settings_in_wifi:
-        lcd.print("Reseaux WiFi disponibles", 14, 32, C_ACCENT)
+        _label(18, 32, "AVAILABLE NETWORKS", C_ACCENT)
         lcd.fillRect(8, 48, 304, 1, C_DIM)
         all_items = ["< Back"] + settings_wifi_networks
         if len(all_items) == 1:
-            lcd.print("Scan en cours...", 14, 80, C_MID)
+            draw_card(60, 80, 200, 50, 0x0A0A1E)
+            lcd.font(_FONT_SM)
+            lcd.print("Scanning...", 90, 100, C_MID)
         else:
             visible_start = max(0, settings_wifi_index - 1) if settings_wifi_index > 1 else 0
             visible = all_items[visible_start:visible_start + 4]
@@ -760,43 +1052,87 @@ def show_page_settings():
                 real_i = visible_start + i
                 y = 56 + i * 36
                 if real_i == settings_wifi_index:
-                    draw_card(8, y - 3, 304, 30, 0x0A1A2A)
+                    draw_card(8, y - 3, 304, 30, 0x0A1A2E)
+                    lcd.fillRect(8, y - 3, 3, 30, C_ACCENT if ssid != "< Back" else C_RED)
                     color = C_RED if ssid == "< Back" else C_ACCENT
-                    lcd.print("> " + ssid[:26], 16, y + 4, color)
+                    lcd.font(_FONT_SM)
+                    lcd.print("> " + ssid[:28], 16, y + 6, color)
                 else:
                     color = 0x884444 if ssid == "< Back" else C_MID
-                    lcd.print("  " + ssid[:26], 16, y + 4, color)
+                    lcd.font(_FONT_SM)
+                    lcd.print("  " + ssid[:28], 16, y + 6, color)
         lcd.fillRect(8, 202, 304, 1, C_DIM)
-        lcd.print("A/C: naviguer   B: choisir", 14, 210, C_DIM)
+        lcd.font(_FONT_SM)
+        lcd.print("A/C: navigate   B: select", 18, 210, C_DIM)
 
     elif settings_menu_active:
-        lcd.print("Menu principal", 14, 32, C_MID)
+        _label(18, 32, "MENU", C_MID)
         lcd.fillRect(8, 48, 304, 1, C_DIM)
+        icons = [C_ACCENT, C_COOL, C_WARM, C_RED]
         for i, item in enumerate(SETTINGS_MENU_ITEMS):
-            y = 62 + i * 48
+            y = 58 + i * 40
             if i == settings_menu_index:
-                draw_card(8, y - 4, 304, 38, 0x0A1A2A)
-                lcd.print("> " + item, 20, y + 8, C_ACCENT)
+                draw_card(8, y - 4, 304, 34, 0x0A1A2E)
+                lcd.fillRect(8, y - 4, 3, 34, icons[i])
+                lcd.font(_FONT_SM)
+                lcd.print("> " + item, 22, y + 8, icons[i])
             else:
-                lcd.print("  " + item, 20, y + 8, C_MID)
-        lcd.fillRect(8, 202, 304, 1, C_DIM)
-        lcd.print("A/C: naviguer   B: valider", 14, 210, C_DIM)
+                lcd.fillRect(8, y - 4, 3, 34, C_DIM)
+                lcd.font(_FONT_SM)
+                lcd.print("  " + item, 22, y + 8, C_MID)
+        lcd.fillRect(8, 222, 304, 1, C_DIM)
+
+    elif settings_editing == "brightness":
+        draw_card(8, 28, 304, 88, 0x0A0A1E)
+        lcd.fillRect(8, 28, 3, 88, C_ACCENT)
+        _label(20, 36, "BRIGHTNESS", C_ACCENT)
+        lcd.font(_FONT_MED)
+        lcd.print("{}%".format(brightness), 20, 54, C_WHITE)
+        lcd.font(_FONT_SM)
+        lcd.fillRoundRect(20, 82, 264, 8, 4, C_DIM)
+        lcd.fillRoundRect(20, 82, max(4, int(264 * brightness / 100)), 8, 4, C_ACCENT)
+        lcd.fillRect(8, 124, 304, 1, C_DIM)
+        lcd.print("A: decrease  10%    C: increase  10%    B: done", 14, 134, C_MID)
+
+    elif settings_editing == "volume":
+        draw_card(8, 28, 304, 88, 0x1A0E00)
+        lcd.fillRect(8, 28, 3, 88, C_WARM)
+        _label(20, 36, "VOLUME", C_WARM)
+        lcd.font(_FONT_MED)
+        lcd.print("{}/10".format(volume), 20, 54, C_WHITE)
+        lcd.font(_FONT_SM)
+        lcd.fillRoundRect(20, 82, 264, 8, 4, C_DIM)
+        lcd.fillRoundRect(20, 82, max(4, int(264 * volume / 10)), 8, 4, C_WARM)
+        lcd.fillRect(8, 124, 304, 1, C_DIM)
+        lcd.print("A: decrease          C: increase          B: done", 14, 134, C_MID)
 
     else:
-        # Root settings landing view
-        draw_card(8,  28, 304, 60, 0x111122)
-        lcd.print("WiFi", 20, 36, C_MID)
-        wifi_status = "Connecte: " + wlan.ifconfig()[0] if wlan.isconnected() else "Non connecte"
+        draw_card(8, 28, 304, 52, 0x0A0A1E)
+        lcd.fillRect(8, 28, 3, 52, C_ACCENT)
+        _label(20, 34, "WIFI", C_ACCENT)
+        wifi_status = "Connected: " + wlan.ifconfig()[0] if wlan.isconnected() else "Not connected"
         wifi_color  = C_GREEN if wlan.isconnected() else C_RED
-        lcd.print(wifi_status[:28], 20, 54, wifi_color)
-        draw_card(8, 94, 304, 58, 0x111122)
-        lcd.print("Luminosite", 20, 102, C_MID)
-        lcd.print("{}%".format(brightness), 20, 118, C_WHITE)
-        lcd.fillRect(20, 138, 260, 6, C_DIM)
-        lcd.fillRect(20, 138, int(260 * brightness / 100), 6, C_ACCENT)
-        lcd.fillRect(8, 158, 304, 1, C_DIM)
-        lcd.print("Appuie sur B pour le menu", 20, 168, C_MID)
-        lcd.print("A: retour aux pages", 20, 188, C_DIM)
+        lcd.font(_FONT_SM)
+        lcd.print(wifi_status[:30], 20, 52, wifi_color)
+
+        draw_card(8, 86, 304, 50, 0x0A0A1E)
+        lcd.fillRect(8, 86, 3, 50, C_COOL)
+        _label(20, 92, "BRIGHTNESS", C_COOL)
+        lcd.font(_FONT_SM)
+        lcd.print("{}%".format(brightness), 186, 92, C_WHITE)
+        lcd.fillRoundRect(20, 108, 264, 6, 3, C_DIM)
+        lcd.fillRoundRect(20, 108, max(4, int(264 * brightness / 100)), 6, 3, C_ACCENT)
+
+        draw_card(8, 142, 304, 50, 0x1A0E00)
+        lcd.fillRect(8, 142, 3, 50, C_WARM)
+        _label(20, 148, "VOLUME", C_WARM)
+        lcd.font(_FONT_SM)
+        lcd.print("{}/10".format(volume), 186, 148, C_WHITE)
+        lcd.fillRoundRect(20, 164, 264, 6, 3, C_DIM)
+        lcd.fillRoundRect(20, 164, max(4, int(264 * volume / 10)), 6, 3, C_WARM)
+
+        lcd.fillRect(8, 198, 304, 1, C_DIM)
+        lcd.print("B: open menu          A: back to pages", 20, 206, C_MID)
 
     draw_page_indicator()
 
@@ -819,32 +1155,33 @@ def show_current_page():
 # ============================================================
 def _do_connect_wifi(ssid, password):
     global _last_drawn_page
-    # FIX 1: Use centralised flush instead of manual piecemeal clears
     _flush_settings_state()
     _last_drawn_page = -1
 
     lcd.fillScreen(C_BG)
     draw_header("WIFI", C_ACCENT)
     led_set(LED_ORANGE)
-    draw_card(8, 30, 304, 100, 0x0A0A1A)
-    lcd.print("Connexion a :", 18, 40, C_MID)
-    lcd.print(ssid[:28], 18, 58, C_YELLOW)
-    lcd.fillRect(18, 78, 280, 1, C_DIM)
-    lcd.print("Patientez...", 18, 88, C_MID)
+    draw_card(8, 30, 304, 110, 0x08081E)
+    lcd.fillRect(8, 30, 3, 110, C_ACCENT)
+    _label(18, 38, "CONNECTING TO", C_ACCENT)
+    lcd.font(_FONT_SM)
+    lcd.print(ssid[:28], 18, 56, C_YELLOW)
+    lcd.fillRect(18, 74, 280, 1, C_DIM)
+    lcd.print("Please wait...", 18, 84, C_MID)
 
     try:
         if wlan.isconnected():
             wlan.disconnect()
             time.sleep(1)
-        wifiCfg.doConnect(ssid, password)
+        wlan.connect(ssid, password)
         t0 = time.time()
         while not wlan.isconnected() and time.time() - t0 < 15:
             time.sleep(1)
         if wlan.isconnected():
             led_set(LED_GREEN)
             vibrate_double()
-            lcd.print("Connecte !", 18, 115, C_GREEN)
-            lcd.print(wlan.ifconfig()[0], 18, 135, C_MID)
+            lcd.print("Connected!", 18, 104, C_GREEN)
+            lcd.print(wlan.ifconfig()[0], 18, 120, C_MID)
             time.sleep(2)
             try:
                 rtc.settime('ntp', host='cn.pool.ntp.org', tzone=3)
@@ -856,43 +1193,42 @@ def _do_connect_wifi(ssid, password):
         else:
             led_set(LED_RED)
             vibrate(200)
-            lcd.print("Echec connexion", 18, 115, C_RED)
+            lcd.print("Connection failed", 18, 104, C_RED)
             time.sleep(2)
     except Exception as e:
         led_set(LED_RED)
-        lcd.print("ERR:{}".format(str(e)[:25]), 18, 115, C_RED)
+        lcd.print("ERR: {}".format(str(e)[:24]), 18, 104, C_RED)
         time.sleep(2)
 
     show_page_settings()
 
 # ============================================================
-#  FIX 1 — Navigation: swipe, Button A, Button C, Button B
+#  NAVIGATION
 # ============================================================
-
 def handle_swipe(dx):
-    global current_page
-    # FIX 1: Block swipe only when inside a settings sub-menu.
-    # Root settings (all flags False) now allows swipe to exit the page.
+    global current_page, _forecast_in_history
     if current_page == 5 and (settings_menu_active or settings_in_wifi
                                or settings_in_keyboard
                                or settings_editing is not None):
         return
     if dx > SWIPE_THRESHOLD:
         vibrate()
-        _flush_settings_state()   # ensure clean state when leaving page 5 via swipe
+        _flush_settings_state()
+        _forecast_in_history = False
         current_page = (current_page - 1) % total_pages
         show_current_page()
         led_page(current_page)
     elif dx < -SWIPE_THRESHOLD:
         vibrate()
         _flush_settings_state()
+        _forecast_in_history = False
         current_page = (current_page + 1) % total_pages
         show_current_page()
         led_page(current_page)
 
 def btn_left_pressed():
     global current_page, settings_menu_index, settings_wifi_index
-    global settings_keyboard_index, brightness
+    global settings_keyboard_index, brightness, volume, _forecast_in_history
     vibrate()
     if current_page == 5:
         if settings_in_keyboard:
@@ -908,21 +1244,26 @@ def btn_left_pressed():
             brightness = max(10, brightness - 10)
             screen.set_screen_brightness(brightness)
             show_page_settings()
+        elif settings_editing == "volume":
+            volume = max(1, volume - 1)
+            show_page_settings()
         else:
-            # FIX 1: Root settings view — Button A navigates back to page 4.
-            # This was previously a no-op ("A ne fait rien"), causing the lock.
             _flush_settings_state()
             current_page = 4
             show_current_page()
             led_page(current_page)
+    elif current_page == 2 and _forecast_in_history:
+        _forecast_in_history = False
+        show_page_forecast()
     else:
+        _forecast_in_history = False
         current_page = (current_page - 1) % total_pages
         show_current_page()
         led_page(current_page)
 
 def btn_right_pressed():
     global current_page, settings_menu_index, settings_wifi_index
-    global settings_keyboard_index, brightness
+    global settings_keyboard_index, brightness, volume, _forecast_in_history
     vibrate()
     if current_page == 5:
         if settings_in_keyboard:
@@ -939,13 +1280,16 @@ def btn_right_pressed():
             brightness = min(100, brightness + 10)
             screen.set_screen_brightness(brightness)
             show_page_settings()
+        elif settings_editing == "volume":
+            volume = min(10, volume + 1)
+            show_page_settings()
         else:
-            # FIX 1: Flush state before leaving settings via right-swipe button
             _flush_settings_state()
             current_page = (current_page + 1) % total_pages
             show_current_page()
             led_page(current_page)
     else:
+        _forecast_in_history = False
         current_page = (current_page + 1) % total_pages
         show_current_page()
         led_page(current_page)
@@ -954,7 +1298,8 @@ def btn_middle_pressed():
     global settings_menu_active, settings_menu_index
     global settings_in_wifi, settings_wifi_networks, settings_wifi_index
     global settings_in_keyboard, settings_keyboard_ssid, settings_keyboard_password
-    global settings_keyboard_index, settings_editing, current_page, brightness
+    global settings_keyboard_index, settings_editing, current_page, brightness, volume
+    global _forecast_in_history
     vibrate()
 
     if current_page == 5:
@@ -962,6 +1307,14 @@ def btn_middle_pressed():
             char = KEYBOARD_LIST[settings_keyboard_index]
             if char == "<BS>":
                 settings_keyboard_password = settings_keyboard_password[:-1]
+            elif char == "<BACK>":
+                settings_in_keyboard       = False
+                settings_in_wifi           = True
+                settings_keyboard_ssid     = ""
+                settings_keyboard_password = ""
+                settings_keyboard_index    = 0
+                show_page_settings()
+                return
             elif char == "<OK>":
                 _do_connect_wifi(settings_keyboard_ssid, settings_keyboard_password)
                 return
@@ -974,7 +1327,6 @@ def btn_middle_pressed():
             if all_items:
                 ssid = all_items[settings_wifi_index]
                 if ssid == "< Back":
-                    # FIX 1: Use flush helper for consistent sub-state teardown
                     _flush_settings_state()
                     show_page_settings()
                 else:
@@ -990,24 +1342,23 @@ def btn_middle_pressed():
                         settings_keyboard_password = ""
                         settings_keyboard_index    = 0
                         settings_in_keyboard       = True
-                        # Keep settings_in_wifi True while we note the SSID,
-                        # then transition cleanly into keyboard mode.
-                        settings_in_wifi = False
+                        settings_in_wifi           = False
                         show_page_settings()
 
         elif settings_menu_active:
             choice = SETTINGS_MENU_ITEMS[settings_menu_index]
             if choice == "Back":
-                # FIX 1: Flush to root settings cleanly
                 _flush_settings_state()
                 show_page_settings()
-            elif choice == "Luminosite":
-                # FIX 1: Flush then set only brightness editing flag
+            elif choice == "Brightness":
                 _flush_settings_state()
                 settings_editing = "brightness"
                 show_page_settings()
+            elif choice == "Volume":
+                _flush_settings_state()
+                settings_editing = "volume"
+                show_page_settings()
             elif choice == "WiFi":
-                # FIX 1: Flush then set only wifi flag
                 _flush_settings_state()
                 settings_in_wifi = True
                 show_page_settings()
@@ -1030,8 +1381,7 @@ def btn_middle_pressed():
                     settings_wifi_networks = []
                 show_page_settings()
 
-        elif settings_editing == "brightness":
-            # FIX 1: Flush clears settings_editing = None and all other flags
+        elif settings_editing in ("brightness", "volume"):
             _flush_settings_state()
             show_page_settings()
 
@@ -1039,6 +1389,10 @@ def btn_middle_pressed():
             settings_menu_active = True
             settings_menu_index  = 0
             show_page_settings()
+
+    elif current_page == 2:
+        _forecast_in_history = not _forecast_in_history
+        show_page_forecast()
 
     elif current_page == 4:
         ask_question()
@@ -1057,36 +1411,97 @@ screen.set_screen_bg_color(C_BG)
 cleanup_wav()
 
 lcd.fillScreen(C_BG)
-lcd.fillRect(0,   0, 320, 3, C_ACCENT)
-lcd.fillRect(0, 237, 320, 3, C_ACCENT)
-led_set(LED_BLUE)
-lcd.print("COACH WEATHER", 55, 75, C_WARM)
-lcd.fillRect(55, 97, 210, 1, C_DIM)
-lcd.print("v2.0", 138, 107, C_MID)
-lcd.print("Demarrage...", 95, 145, C_MID)
+lcd.fillRect(0,   0, 320,   3, C_ACCENT)
+lcd.fillRect(0, 237, 320,   3, C_ACCENT)
+lcd.fillRect(0,   0,   3, 240, C_ACCENT)
+lcd.fillRect(317, 0,   3, 240, C_ACCENT)
+lcd.fillRect(4,   4, 312,   1, C_DIM)
+lcd.fillRect(4, 235, 312,   1, C_DIM)
+
+led_set(LED_BLUE, 15)
 vibrate(100)
-time.sleep(1)
+
+lcd.fillRect(40, 66, 240, 2, C_DIM)
+lcd.font(_FONT_MED)
+lcd.print("COACH  WEATHER", 40, 74, C_WARM)
+lcd.font(_FONT_SM)
+lcd.fillRect(40, 104, 240, 2, C_DIM)
+lcd.print("IoT Dashboard  v2.0", 96, 110, C_MID)
+lcd.print("M5Stack Core2", 110, 126, C_DIM)
 
 screen.set_screen_brightness(brightness)
 
-lcd.print("Connexion WiFi...", 85, 168, C_MID)
-wifiCfg.autoConnect(lcdShow=True)
-time.sleep(1)
+BAR_X = 40
+BAR_Y = 158
+BAR_W = 240
+BAR_H = 8
+lcd.fillRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, 4, C_DIM)
 
-lcd.print("Sync NTP...", 105, 188, C_MID)
+def _boot_progress(label, frac):
+    lcd.fillRect(BAR_X, BAR_Y + 14, BAR_W, 12, C_BG)
+    lcd.font(_FONT_SM)
+    lcd.print(label, BAR_X, BAR_Y + 14, C_MID)
+    filled = max(6, int(BAR_W * frac))
+    lcd.fillRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, 4, C_DIM)
+    lcd.fillRoundRect(BAR_X, BAR_Y, filled, BAR_H, 4, C_ACCENT)
+    if filled > 10:
+        lcd.fillRect(BAR_X + filled - 4, BAR_Y + 1, 4, BAR_H - 2, C_WHITE)
+
+# WiFi: direct WLAN connect (non-blocking) — avoids UIFlow server handshake
+# that hangs in standalone/App mode when wifiCfg.autoConnect is called.
+_boot_progress("Connecting to WiFi...", 0.10)
+if not wlan.isconnected():
+    _cand = []
+    try:
+        with open('/flash/uiflow/config.json', 'r') as _cf:
+            _cfg = ujson.loads(_cf.read())
+            _s = _cfg.get('ssid') or _cfg.get('wifi_ssid', '')
+            _p = _cfg.get('password') or _cfg.get('wifi_password', '')
+            if _s:
+                _cand.append((_s, _p))
+    except:
+        pass
+    for _s, _p in KNOWN_NETWORKS:
+        if _s:
+            _cand.append((_s, _p))
+    for _ssid, _pwd in _cand:
+        if wlan.isconnected():
+            break
+        try:
+            wlan.connect(_ssid, _pwd)
+            _t0 = time.time()
+            while not wlan.isconnected() and time.time() - _t0 < 12:
+                time.sleep_ms(500)
+        except:
+            pass
+
+if wlan.isconnected():
+    _boot_progress("WiFi  " + wlan.ifconfig()[0], 0.35)
+    led_set(LED_CYAN, 10)
+else:
+    _boot_progress("WiFi unavailable - offline mode", 0.35)
+    led_set(LED_ORANGE, 10)
+
+_boot_progress("Syncing time...", 0.50)
 try:
     rtc.settime('ntp', host='cn.pool.ntp.org', tzone=3)
-    lcd.print("OK", 215, 188, C_GREEN)
+    _boot_progress("Time synced", 0.60)
 except:
-    lcd.print("FAIL", 215, 188, C_RED)
-time.sleep(1)
+    _boot_progress("Time sync skipped", 0.60)
+last_tts_time = time.time() - 3601
 
-lcd.print("Chargement...", 95, 208, C_MID)
+_boot_progress("Loading weather data...", 0.72)
 fetch_latest()
 fetch_forecast()
+
+_boot_progress("Loading alerts...", 0.88)
 fetch_alerts()
 
+_boot_progress("Ready!", 1.00)
+led_set(LED_GREEN, 15)
 vibrate_double()
+time.sleep_ms(700)
+
 show_current_page()
 led_page(current_page)
 
@@ -1095,6 +1510,7 @@ touch_end_x    = None
 last_touch     = False
 counter        = 0
 _fetch_counter = 0
+_anim_counter  = 0
 _motion_prev   = False
 
 # ============================================================
@@ -1103,10 +1519,6 @@ _motion_prev   = False
 while True:
     time.sleep_ms(100)
 
-    # ── TOUCH ────────────────────────────────────────────────────────────────
-    # FIX 1: Evaluate touch.status() inline (avoids stale variable), then
-    # guard touch.read() result for None to handle the race window where
-    # the finger lifts between status() and read().
     try:
         if touch.status():
             t = touch.read()
@@ -1127,9 +1539,23 @@ while True:
         touch_end_x   = None
         last_touch    = False
 
-    counter += 1
+    counter       += 1
+    _anim_counter += 1
 
-    # ── MOTION: read every 500 ms ─────────────────────────────────────────────
+    # 1-second live sensor refresh on indoor page
+    if _anim_counter % 10 == 0:
+        _live_blink = not _live_blink
+        if current_page == 0 and not is_recording:
+            _t, _h, _v, _ = read_sensors()
+            if _t is not None: data["temp_indoor"] = round(_t, 1)
+            if _h is not None: data["humidity"]    = round(_h, 1)
+            if _v is not None: data["air_quality"] = int(_v)
+            _draw_data_indoor()
+            draw_page_indicator()
+        if _anim_counter >= 10000:
+            _anim_counter = 0
+
+    # Motion: read every 500 ms
     if counter % 5 == 0:
         try:
             motion_now = pir_0.state
@@ -1143,11 +1569,14 @@ while True:
         except:
             pass
 
-    # ── FETCH + SEND every 30 s ───────────────────────────────────────────────
+    # Fetch + send every 30 s
     if counter >= 300:
         counter = 0
         if not wlan.isconnected():
-            wifiCfg.reconnect()
+            try:
+                wlan.reconnect()
+            except:
+                pass
         send_sensor_data()
         fetch_latest()
         fetch_alerts()
@@ -1157,14 +1586,14 @@ while True:
         elif current_page == 1:
             _draw_data_outdoor()
             draw_page_indicator()
-        elif current_page == 2:
+        elif current_page == 2 and not _forecast_in_history:
             _draw_data_forecast()
             draw_page_indicator()
         elif current_page == 3:
             _draw_data_coach()
             draw_page_indicator()
 
-    # ── FORECAST every 5 min ─────────────────────────────────────────────────
+    # Forecast every 5 min
     _fetch_counter += 1
     if _fetch_counter >= 3000:
         _fetch_counter = 0
