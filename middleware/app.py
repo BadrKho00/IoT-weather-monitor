@@ -1,7 +1,8 @@
 import os
+import struct
 import base64
 import tempfile
-from flask import Flask, request, jsonify, send_file
+from flask import Flask, request, jsonify, send_file, make_response
 from bigquery_client import (
     insert_sensor_data,
     get_latest_reading,
@@ -156,27 +157,20 @@ def voice_raw():
             response_path = f.name
         text_to_speech(answer, response_path)
 
-        # 4. Renvoyer le WAV directement
-        response = send_file(
-            response_path,
-            mimetype="audio/wav",
-            as_attachment=False
-        )
+        # 4. Prepend answer text as length-prefixed bytes before WAV data.
+        # Format: [4-byte big-endian text length][UTF-8 text][WAV bytes]
+        # This is reliably readable by MicroPython urequests (unlike HTTP headers
+        # which are not exposed for binary responses in UIFlow builds).
+        with open(response_path, "rb") as f:
+            wav_bytes = f.read()
+        os.remove(response_path)
 
-        # Expose text so the M5Stack can display the answer before playing
-        safe_answer   = answer.encode("ascii", errors="replace").decode()[:200]
-        safe_question = question.encode("ascii", errors="replace").decode()[:100]
-        response.headers["X-Answer"]   = safe_answer
-        response.headers["X-Question"] = safe_question
+        text_bytes = answer.encode("utf-8")
+        prefix = struct.pack(">I", len(text_bytes))
+        body = prefix + text_bytes + wav_bytes
 
-        # Nettoyage après envoi
-        @response.call_on_close
-        def cleanup():
-            try:
-                os.remove(response_path)
-            except:
-                pass
-
+        response = make_response(body)
+        response.headers["Content-Type"] = "audio/wav"
         return response
 
     except Exception as e:

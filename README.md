@@ -38,7 +38,7 @@ Flask Middleware  ─── Google Cloud Run ───────────�
         │  BigQuery read
         ▼
 
-Streamlit Dashboard  ── Streamlit Community Cloud ───────────────────────────
+Streamlit Dashboard  ── Google Cloud Run ─────────────────────────────────────
   └─ Charts, live readings, 5-day forecast, AI voice Q&A panel
 ```
 
@@ -49,7 +49,7 @@ Streamlit Dashboard  ── Streamlit Community Cloud ────────�
 | Component  | URL |
 |------------|-----|
 | Middleware (Cloud Run) | `https://iot-weather-middleware-183604469593.europe-west6.run.app` |
-| Dashboard (Streamlit Cloud) | `https://iot-weather-monitor-pbjyaj2ztt8pumj5fcunqg.streamlit.app/` |
+| Dashboard (Cloud Run) | `https://iot-weather-dashboard-183604469593.europe-west6.run.app` |
 
 ---
 
@@ -156,6 +156,17 @@ gcloud run deploy iot-weather-middleware \
 cd dashboard
 pip install -r requirements.txt
 MIDDLEWARE_URL=http://127.0.0.1:5000 streamlit run streamlit_app.py
+```
+
+### Deploy to Cloud Run
+
+```bash
+cd dashboard
+gcloud run deploy iot-weather-dashboard \
+  --source . \
+  --region europe-west6 \
+  --allow-unauthenticated \
+  --set-env-vars "MIDDLEWARE_URL=https://iot-weather-middleware-183604469593.europe-west6.run.app"
 ```
 
 ---
